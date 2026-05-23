@@ -1,0 +1,237 @@
+MoTeC .ld Binary Log File Format Specification
+=================================================
+
+Based on analysis of S1_#25606_20260426_191239_02.ld (54,574,479 bytes)
+and the motec_parser.py implementation.
+
+NOTE: This is a reverse-engineered specification. Some fields are still
+unknown or poorly understood. All integers are little-endian.
+
+
+1. FILE LAYOUT
+==============
+
+The file is organized into three main sections, accessed via pointers
+in the file header:
+
+  [0]         File Header (ldHead, 1762 bytes)
+  [...]       Undefined region (may contain padding or other data)
+  [~2.3 MB]   Event Metadata (ldEvent -> ldVenue -> ldVehicle, pointer-chained)
+  [~2.4 MB]   Channel Metadata Linked List (ldChan, 116 bytes each)
+  [~2.4 MB]   Channel Data Blocks (raw binary samples, variable-length)
+
+The file uses a pointer-based navigation scheme rather than fixed
+section offsets. The file header contains pointers to the channel
+metadata and event metadata sections. Channel metadata entries form
+a doubly-linked list. Channel data blocks are scattered throughout
+the latter portion of the file.
+
+
+2. FILE HEADER (ldHead) - 1762 bytes
+=====================================
+
+Offset  Size  Type   Field              Description
+------  ----  -----  -----------------  ------------------------------------
+0       4     uint32 ldmarker           Magic number, always 0x40 (64)
+4       4     -      RESERVED
+8       4     uint32 chann_meta_ptr     Pointer to first ldChan entry
+12      4     uint32 chann_data_ptr     Pointer to first channel data block
+16      20    -      RESERVED
+36      4     uint32 event_ptr          Pointer to ldEvent block (0 = none)
+40      24    -      RESERVED
+64      2     uint16 unknown_1          Static value, always 2 (observed)
+66      2     uint16 unknown_2          Static value, always 16960
+68      2     uint16 unknown_3          Static value, always 15
+70      4     uint32 device_serial      Device serial number
+74      8     char[8] device_type       Device model, e.g. "M1" (null-padded)
+82      2     uint16 device_version     Device firmware version
+84      2     uint16 unknown_4          Static value, always 0 (observed)
+86      4     uint32 num_channs         Total number of channels
+90      4     -      RESERVED
+94      16    char[16] date             DD/MM/YYYY (null-padded ASCII)
+110     16    -      RESERVED
+126     16    char[16] time             HH:MM:SS (null-padded ASCII)
+142     16    -      RESERVED
+158     64    char[64] driver           Driver name (null-padded ASCII)
+222     64    char[64] vehicleid        Vehicle identifier (null-padded)
+286     64    -      RESERVED
+350     64    char[64] venue            Venue/track name (null-padded)
+414     64    -      RESERVED
+478     1024  -      RESERVED
+1502    4     uint32 pro_logging        Pro logging flag (0 or magic number)
+1506    66    -      RESERVED
+1572    64    char[64] short_comment    Short session comment
+1636    126   -      RESERVED
+
+
+3. EVENT METADATA (ldEvent) - 1154 bytes
+=========================================
+
+Offset  Size  Type   Field              Description
+------  ----  -----  -----------------  ------------------------------------
+0       64    char[64] name            Event name (null-padded ASCII)
+64      64    char[64] session         Session name, e.g. "R2" (null-padded)
+128     1024  char[1024] comment       Event comment (null-padded ASCII)
+1152    2     uint16 venue_ptr         Pointer to ldVenue (0 = none)
+
+The event block chains to venue metadata via venue_ptr.
+
+
+4. VENUE METADATA (ldVenue) - 1100 bytes
+=========================================
+
+Offset  Size  Type   Field              Description
+------  ----  -----  -----------------  ------------------------------------
+0       64    char[64] name           Venue/track name (null-padded ASCII)
+64      1034  -      RESERVED
+1098    2     uint16 vehicle_ptr       Pointer to ldVehicle (0 = none)
+
+
+5. VEHICLE METADATA (ldVehicle) - 260 bytes
+===========================================
+
+Offset  Size  Type   Field              Description
+------  ----  -----  -----------------  ------------------------------------
+0       64    char[64] id             Vehicle ID (null-padded ASCII)
+64      128   -      RESERVED
+192     4     uint32 weight          Vehicle weight
+196     32    char[32] type          Vehicle type (null-padded ASCII)
+228     32    char[32] comment       Vehicle comment (null-padded ASCII)
+
+
+6. CHANNEL METADATA (ldChan) - 116 bytes
+=========================================
+
+Each channel has a metadata entry. Entries form a doubly-linked list
+via prev_addr/next_addr. The first entry has prev_addr=0, the last
+has next_addr=0. Gap of 280 bytes between consecutive entries
+(116 bytes struct + 164 bytes padding/reserved per entry slot).
+
+Offset  Size  Type   Field              Description
+------  ----  -----  -----------------  ------------------------------------
+0       4     uint32 prev_addr          Previous ldChan entry (0 = first)
+4       4     uint32 next_addr         Next ldChan entry (0 = last)
+8       4     uint32 data_ptr          Pointer to raw data block
+12      4     uint32 n_data            Number of data samples
+16      2     uint16 counter           Monotonically increasing ID
+18      2     uint16 dtype_a           Data type class (see table below)
+20      2     uint16 dtype             Data type size code
+22      2     uint16 freq             Sampling frequency in Hz
+24      2     int16  shift            Scaling offset (added after divide)
+26      2     int16  mul              Scaling multiplier (applied last)
+28      2     int16  scale            Scaling divisor (divided first)
+30      2     int16  dec_places       Decimal places (power of 10 divisor)
+32      32    char[32] name           Channel name (null-padded ASCII)
+64      12    char[12] unit           Unit string, e.g. "km/h" (null-padded)
+76      40    -      RESERVED
+
+Channel names are truncated at 32 characters. When multiple channels
+share the same truncated name, the parser assigns _1, _2, etc. suffixes.
+
+
+7. DATA TYPE MAPPING
+=====================
+
+The data type is determined by two fields: dtype_a (class) and dtype (size).
+
+dtype_a  dtype  Resolved Type   Bytes/sample  Channels
+-------  -----  -------------  ------------  ----------
+0x03     0x02  int16          2             58
+0x03     0x04  int32          4             N/A (not observed)
+0x05     0x04  int32          4             5
+0x07     0x02  float16        2             N/A (not observed)
+0x07     0x04  float32        4             113
+0x08     0x08  float64        8             2
+0x06     0x04  UNMAPPED       4             9 (Lambda Collector diags, GPS)
+
+The dtype field maps to size as: 2 -> 16-bit, 4 -> 32-bit, 8 -> 64-bit.
+The dtype_a field maps to class: 0x03/0x05 -> integer, 0x07 -> float,
+0x08 -> double, 0x06 -> unknown/unmapped.
+
+For unmapped types (dtype_a=0x06), the parser fills the channel with NaN.
+
+
+8. CHANNEL DATA BLOCKS
+=======================
+
+Each channel's raw data is stored at data_ptr for n_data samples.
+The data is a simple array of values in the resolved data type:
+
+  int16:    2 bytes per sample, little-endian signed
+  int32:    4 bytes per sample, little-endian signed
+  float16:  2 bytes per sample, IEEE 754 half-precision
+  float32:  4 bytes per sample, IEEE 754 single-precision
+  float64:  8 bytes per sample, IEEE 754 double-precision
+
+Data blocks are not necessarily contiguous in the file. Each channel's
+data is at its own data_ptr. Channels are typically ordered by frequency
+group, with higher-frequency channels appearing first.
+
+
+9. SCALING FORMULA
+==================
+
+Raw data values are scaled using these parameters from ldChan:
+
+  scaled = (raw / scale * 10^(-dec_places) + shift) * mul
+
+Most channels use identity scaling: shift=0, mul=1, scale=1, dec_places=0
+which evaluates to: scaled = raw
+
+The parser applies scaling after reading the raw binary data.
+
+
+10. FREQUENCY GROUPS
+=====================
+
+Channels are sampled at different frequencies. All groups cover the
+same time span (5018 seconds = 83.6 minutes). Observed groups:
+
+Frequency  Channels  Samples   Duration
+---------  --------  -------   --------
+100 Hz     4         501,826   5018.3s
+50 Hz      34        250,913   5018.3s
+20 Hz      5         100,366   5018.3s
+10 Hz      53        50,183    5018.3s
+5 Hz       6         25,092    5018.4s
+2 Hz       1         10,037    5018.5s
+1 Hz       84        5,019     5019.0s
+
+The time column in the CSV output assumes 100 Hz spacing (0.01s per row).
+Lower-frequency channels have fewer samples and must be expanded (e.g.
+via step-hold repetition) to align with the 100 Hz time base.
+
+
+11. PARSED CSV OUTPUT FORMAT
+=============================
+
+The parser produces a CSV file with this structure:
+
+Line 1:    "Format","MoTeC CSV File",,,... (format marker)
+Lines 2-8: Metadata key-value pairs (driver, venue, event, etc.)
+Lines 9-14: Blank padding
+Line 15:   Column headers (quoted, comma-separated)
+Line 16:   Units row (quoted, comma-separated)
+Line 17+:  Data rows (comma-separated numeric values, no header)
+
+The Coolant.Fans.Enable column is dropped during export.
+Column names are converted from dots to spaces, with special-case
+mappings loaded from columnMap.json for truncated channel names.
+
+
+12. KNOWN ISSUES
+================
+
+- Channel names are stored as 32-byte null-padded ASCII strings.
+  Names longer than 32 characters are truncated, often mid-word.
+  Example: "Fuel Temperature Sensor Diagnostic" -> "Fuel.Temperature.Sensor.Diagnost"
+
+- The dtype_a=0x06 type class is not understood. It appears on
+  Lambda Collector diagnostic sub-fields and GPS Date/Satellites.
+
+- The parser prints a decode warning for one channel's metadata
+  bytes (0xa1 in position 6). This does not affect parsing of the
+  data itself.
+
+- The file header contains large reserved regions (1024 bytes at
+  offset 478, 126 bytes at offset 1636) whose purpose is unknown.

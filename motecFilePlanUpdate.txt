@@ -1,0 +1,356 @@
+ MoTeC CSV Format Differences & Fix Plan
+
+ Context
+
+ The user has two MoTeC CSV files: S1_#25606_convertedCopy.csv (works perfectly) and decoded_telemetry.csv (broken
+ metadata, missing Time column, off-by-one units). Both pass the is_motec_file() check because line 1 contains
+ "Format","MoTeC CSV File". The parser in processor.py was built for the standard MoTeC export format and doesn't
+ handle the decoded file's variations.
+
+ ---
+ Format Differences (Detailed)
+
+ 1. Metadata Block (Lines 1-8 vs 1-12)
+
+ Working file uses the standard MoTeC multi-column CSV format for ALL metadata lines:
+ "Format","MoTeC CSV File",,,"Workbook",""
+ "Venue","Road Atlanta",,,"Worksheet",""
+ "Vehicle","motec usa",,,"Vehicle Desc",""
+ "Driver","H. Meza",,,"Engine ID",""
+ "Device","M1"
+ "Comment","#28 P",,,"Session","P"
+ "Log Date","3/13/2026",,,"Origin Time","0.000","s"
+ ...
+ Each line is comma-separated with optional 5-field layout. Parser's line.split(',', 1) extracts key from first field,
+ value from remainder.
+
+ Decoded file switches to a key: value format after line 1:
+ "Format","MoTeC CSV File",,,"Workbook",""
+ driver:    H. Meza
+ vehicleid: motec usa
+ venue:     Sonoma
+ event:     TA2
+ session:   R2
+ sample rate: 100 Hz
+ short_comment: R2 #28
+ Bug: Lines 2-8 have NO commas. line.split(',', 1) returns a single-element list, fails len(parts) == 2 check, and is
+ skipped. Result: metadata dict only has {Format: MoTeC CSV File}.
+
+ 2. Blank Line Count (Data Start Row)
+
+ Working file: 12 metadata lines + 2 blank (13-14) + column-names (15) + units (16) + 2 blank (17-18) + data (19+).
+ Data at line-index 18.
+
+ Decoded file: 8 metadata lines + 6 blank (9-14) + column-names (15) + units (16) + 1 blank (17) + data (18+). Data at
+ line-index 17.
+
+ Bug: Parser hardcodes start_row = 18 (skiprows=18, reads from line-index 18). For the decoded file, data starts at
+ index 17, so the parser skips one data row AND reads from the wrong offset.
+
+ 3. Column Names Format
+
+ Working file: 179 quoted names with spaces: "Time","Distance","Brake State","Coolant Temperature",...
+
+ Decoded file: Fewer names (channel set differs), dots instead of spaces, many truncated names with _1/_2 suffixes for
+ disambiguation:
+ "Time","Brake.State","Coolant.Temperature",...,"Exhaust.Lambda.Bank 1.Collector.","Exhaust.Lambda.Bank
+ 1.Collector._1",...
+ Some names are severely truncated (Differenti, Contributi, Synchronisation.Position.). Column count differs —
+ Brake.State is position 1 (no Distance column between Time and Brake).
+
+ 4. Units Row Alignment
+
+ Working file: 179 unit entries matching 179 column names. Position 0="s", position 1="ft", etc.
+
+ Decoded file: Unit entries match column count. Position 0="s", position 1="" (empty — Brake.State has no unit assigned
+  in source). Units are correctly aligned with columns IN THE FILE.
+
+ 5. Data Rows Format
+
+ Working file: All values quoted: "0.000","0","","",...
+ Decoded file: No quotes, pure numeric: 0.0,0.0,82.42436,...
+
+ ---
+ Root Causes of Each Symptom
+
+ Symptom: Only "Format: Motec CSV" in metadata
+ Root Cause: Lines 2-8 use key: value format — no commas to split on
+ ────────────────────────────────────────
+ Symptom: Time missing from Channel Statistics
+ Root Cause: Actually expected — Time is column index 0, read as index_col=0 in extract_metadata(). It becomes the
+   DataFrame index, not a named column. This happens for BOTH files. The user may not have noticed in the working file
+   because the working file has Distance as the second channel which provides position context.
+ ────────────────────────────────────────
+ Symptom: Units off by one
+ Root Cause: The decoded file has different channel ordering (no Distance at position 1). Brake.State is at position 1
+   instead of Brake State at position 2. The units array IS aligned with the columns — but since the channel set is
+   different, the user sees "wrong" units next to channels they expect. Alternatively: if any column name in the header
+
+   row contains an unquoted comma, it splits into 2 entries, shifting everything after it.
+
+ ---
+ Implementation Plan
+
+ Step 1: Fix metadata parser to handle key: value format
+
+ File: backend/app/services/processor.py, method _parse_motec_header()
+
+ Add a fallback parsing path after the comma-split: if a line has no comma but contains a colon, split on : instead.
+
+ for i in range(min(12, len(lines))):
+     line = lines[i].strip()
+     if not line:
+         continue
+     parts = line.split(',', 1)
+     if len(parts) == 2:
+         key = parts[0].strip('"')
+         val = parts[1].strip().strip('"')
+         metadata[key] = val
+     elif ':' in line:
+         # Fallback for "key: value" format
+         key, val = line.split(':', 1)
+         metadata[key.strip('"').strip()] = val.strip()
+
+ Also extend the scan range from 12 to 14 lines to catch metadata that might be on slightly different rows.
+
+ Step 2: Auto-detect data start row
+
+ File: backend/app/services/processor.py, method _parse_motec_header()
+
+ Instead of hardcoding start_row = 18, scan downward from the units row (index 15) to find the first non-blank line
+ after the units row. This handles files with 1, 2, or more blank separator lines.
+
+ # Find data start row by scanning past blank lines after units
+ data_start = 16  # first row after units (index 15)
+ while data_start < len(lines) and lines[data_start].strip() == '':
+     data_start += 1
+ # If we haven't found data in first 25 lines, default to 18
+ if data_start >= len(lines):
+     data_start = 18
+
+ However, since we only read 25 lines, we need to increase the read window or handle the case where data starts beyond
+         key = parts[0].strip('"')
+         val = parts[1].strip().strip('"')
+         metadata[key] = val
+     elif ':' in line:
+         # Fallback for "key: value" format
+         key, val = line.split(':', 1)
+         metadata[key.strip('"').strip()] = val.strip()
+
+ Also extend the scan range from 12 to 14 lines to catch metadata that might be on slightly different rows.
+
+ Step 2: Auto-detect data start row
+
+ File: backend/app/services/processor.py, method _parse_motec_header()
+
+ Instead of hardcoding start_row = 18, scan downward from the units row (index 15) to find the first non-blank line
+ after the units row. This handles files with 1, 2, or more blank separator lines.
+
+ # Find data start row by scanning past blank lines after units
+ data_start = 16  # first row after units (index 15)
+ while data_start < len(lines) and lines[data_start].strip() == '':
+     data_start += 1
+ # If we haven't found data in first 25 lines, default to 18
+ if data_start >= len(lines):
+     data_start = 18
+
+ However, since we only read 25 lines, we need to increase the read window or handle the case where data starts beyond
+
+  Read 2 files (ctrl+o to expand)
+
+● Now I have a thorough understanding. Let me write up the detailed analysis.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● Here's the detailed explanation of what's happening:
+
+  Format Differences
+
+  Metadata block — The working file uses comma-separated quoted fields for all 12 metadata rows
+  ("Key","Value",,,"Key2","Value2"). The decoded file only has the standard format on line 1, then switches to key:
+  value format (no commas) for lines 2-8. The parser's line.split(',', 1) fails on these lines — they have no commas —
+  so only Format: MoTeC CSV File is captured.
+
+  Data start row — The working file has data at row 19 (index 18), matching the hardcoded start_row=18. The decoded file
+   has fewer metadata lines (8 vs 12) and fewer blank separator lines (1 vs 2), so data starts at row 18 (index 17) —
+  one row earlier than the parser expects.
+
+  Channel set — The decoded file is missing the Distance channel. Brake.State is at position 1 instead of position 2.
+  This means units that were expected at position N are at different positions, creating the "off by one" appearance.
+
+  Time in Channel Statistics — Time is read as index_col=0 (DataFrame index), so it never appears as a channel in stats.
+   This is the behavior for both files, but less noticeable in the working file since Distance provides position
+  context.
+
+  Column names format — Dots instead of spaces, truncated names with _1 suffixes. All handled correctly by the parser
+  since they're still quoted CSV fields.
+
+  The plan addresses all four issues: colon-based metadata fallback, auto-detecting data start row, including Time in
+  channel stats, and using csv.reader for robustness.
+
+● User approved Claude's plan
+  ⎿  Plan saved to: ~\.claude\plans\please-read-the-first-shimmying-fern.md · /plan to edit
+     MoTeC CSV Format Differences & Fix Plan
+
+     Context
+
+     The user has two MoTeC CSV files: S1_#25606_convertedCopy.csv (works perfectly) and decoded_telemetry.csv (broken
+     metadata, missing Time column, off-by-one units). Both pass the is_motec_file() check because line 1 contains
+     "Format","MoTeC CSV File". The parser in processor.py was built for the standard MoTeC export format and doesn't
+     handle the decoded file's variations.
+
+     ---
+     Format Differences (Detailed)
+
+     1. Metadata Block (Lines 1-8 vs 1-12)
+
+     Working file uses the standard MoTeC multi-column CSV format for ALL metadata lines:
+     "Format","MoTeC CSV File",,,"Workbook",""
+     "Venue","Road Atlanta",,,"Worksheet",""
+     "Vehicle","motec usa",,,"Vehicle Desc",""
+     "Driver","H. Meza",,,"Engine ID",""
+     "Device","M1"
+     "Comment","#28 P",,,"Session","P"
+     "Log Date","3/13/2026",,,"Origin Time","0.000","s"
+     ...
+     Each line is comma-separated with optional 5-field layout. Parser's line.split(',', 1) extracts key from first
+     field, value from remainder.
+
+     Decoded file switches to a key: value format after line 1:
+     "Format","MoTeC CSV File",,,"Workbook",""
+     driver:    H. Meza
+     vehicleid: motec usa
+     venue:     Sonoma
+     event:     TA2
+     session:   R2
+     sample rate: 100 Hz
+     short_comment: R2 #28
+     Bug: Lines 2-8 have NO commas. line.split(',', 1) returns a single-element list, fails len(parts) == 2 check, and
+     is skipped. Result: metadata dict only has {Format: MoTeC CSV File}.
+
+     2. Blank Line Count (Data Start Row)
+
+     Working file: 12 metadata lines + 2 blank (13-14) + column-names (15) + units (16) + 2 blank (17-18) + data (19+).
+     Data at line-index 18.
+
+     Decoded file: 8 metadata lines + 6 blank (9-14) + column-names (15) + units (16) + 1 blank (17) + data (18+). Data
+     at line-index 17.
+
+     Bug: Parser hardcodes start_row = 18 (skiprows=18, reads from line-index 18). For the decoded file, data starts at
+     index 17, so the parser skips one data row AND reads from the wrong offset.
+
+     3. Column Names Format
+
+     Working file: 179 quoted names with spaces: "Time","Distance","Brake State","Coolant Temperature",...
+
+     Decoded file: Fewer names (channel set differs), dots instead of spaces, many truncated names with _1/_2 suffixes
+     for disambiguation:
+     "Time","Brake.State","Coolant.Temperature",...,"Exhaust.Lambda.Bank 1.Collector.","Exhaust.Lambda.Bank
+     1.Collector._1",...
+     Some names are severely truncated (Differenti, Contributi, Synchronisation.Position.). Column count differs —
+     Brake.State is position 1 (no Distance column between Time and Brake).
+
+     4. Units Row Alignment
+
+     Working file: 179 unit entries matching 179 column names. Position 0="s", position 1="ft", etc.
+
+     Decoded file: Unit entries match column count. Position 0="s", position 1="" (empty — Brake.State has no unit
+     assigned in source). Units are correctly aligned with columns IN THE FILE.
+
+     5. Data Rows Format
+
+     Working file: All values quoted: "0.000","0","","",...
+     Decoded file: No quotes, pure numeric: 0.0,0.0,82.42436,...
+
+     ---
+     Root Causes of Each Symptom
+
+     Symptom: Only "Format: Motec CSV" in metadata
+     Root Cause: Lines 2-8 use key: value format — no commas to split on
+     ────────────────────────────────────────
+     Symptom: Time missing from Channel Statistics
+     Root Cause: Actually expected — Time is column index 0, read as index_col=0 in extract_metadata(). It becomes the
+       DataFrame index, not a named column. This happens for BOTH files. The user may not have noticed in the working
+     file
+       because the working file has Distance as the second channel which provides position context.
+     ────────────────────────────────────────
+     Symptom: Units off by one
+     Root Cause: The decoded file has different channel ordering (no Distance at position 1). Brake.State is at position
+      1
+       instead of Brake State at position 2. The units array IS aligned with the columns — but since the channel set is
+       different, the user sees "wrong" units next to channels they expect. Alternatively: if any column name in the
+     header
+       row contains an unquoted comma, it splits into 2 entries, shifting everything after it.
+
+     ---
+     Implementation Plan
+
+     Step 1: Fix metadata parser to handle key: value format
+
+     File: backend/app/services/processor.py, method _parse_motec_header()
+
+     Add a fallback parsing path after the comma-split: if a line has no comma but contains a colon, split on : instead.
+
+     for i in range(min(12, len(lines))):
+         line = lines[i].strip()
+         if not line:
+             continue
+         parts = line.split(',', 1)
+         if len(parts) == 2:
+             key = parts[0].strip('"')
+             val = parts[1].strip().strip('"')
+             metadata[key] = val
+         elif ':' in line:
+             # Fallback for "key: value" format
+             key, val = line.split(':', 1)
+             metadata[key.strip('"').strip()] = val.strip()
+
+     Also extend the scan range from 12 to 14 lines to catch metadata that might be on slightly different rows.
+
+     Step 2: Auto-detect data start row
+
+     File: backend/app/services/processor.py, method _parse_motec_header()
+
+     Instead of hardcoding start_row = 18, scan downward from the units row (index 15) to find the first non-blank line
+     after the units row. This handles files with 1, 2, or more blank separator lines.
+
+     # Find data start row by scanning past blank lines after units
+     data_start = 16  # first row after units (index 15)
+     while data_start < len(lines) and lines[data_start].strip() == '':
+         data_start += 1
+     # If we haven't found data in first 25 lines, default to 18
+     if data_start >= len(lines):
+         data_start = 18
+
+     However, since we only read 25 lines, we need to increase the read window or handle the case where data starts
+     beyond line 25. A better approach: read column/units rows from fixed positions (14-15), then use pd.read_csv with
+     skipblank_lines=True after the data start row detection.
+
+     Step 3: Ensure Time column appears in Channel Statistics
+
+     File: backend/app/services/processor.py, method extract_metadata()
+
+     Currently Time is consumed as index_col=0. To include it in channel stats, either:
+     - Read without index_col=0 and treat Time as a regular column, OR
+     - After reading, reset_index() and include Time in the stats loop
+
+     The simpler fix: remove index_col=0 from the extract_metadata() pandas read and treat Time like any other column.
+     The get_downsampled_data() method already doesn't use index_col=0.
+
+     Step 4: Use csv.reader for column names row
+
+     File: backend/app/services/processor.py, method _parse_motec_header()
+
+     Replace line.split(',') with csv.reader for parsing the column names and units rows. This properly handles any edge
+      cases with quoted fields.
+
+     ---
+     Verification
+
+     1. Upload decoded_telemetry.csv and verify File Summary shows: Driver, Vehicle, Venue, Session, Sample Rate in
+     metadata grid
+     2. Verify Time appears in Channel Statistics with unit "s"
+     3. Verify unit alignment matches channel names (e.g., Coolant.Temperature shows "C", Engine.Speed shows "rpm")
+     4. Verify the working file (S1_#25606_convertedCopy.csv) still works identically
+     5. Run rules engine checks on both files to ensure no regression

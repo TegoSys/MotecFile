@@ -1,0 +1,58 @@
+ MoTeC Parser: Multi-Rate Channel Data Goes to Zero
+
+ Context
+
+ The motec_parser.py produces a decoded_telemetry.csv where channel data appears to go to zero partway through the
+ file. For example, GPS.Speed drops to zero around row ~247k, and Engine.Oil.Temperature only has ~5k rows of data. The
+  user has a separate export of the same source file that does NOT show this, confirming it is a parser bug.
+
+ Root Cause
+
+ The MoTeC .ld binary file stores 187 channels at 7 different frequencies (100 Hz down to 1 Hz). Each channel has its
+ own independent data pointer and length. The parser reads each channel's raw data correctly. The bug is at lines
+ 228-235 — when merging differently-sized arrays into a single pandas DataFrame:
+
+ data_dict[unique_name] = pd.Series(chan.data)   # line 228 — Series of different lengths
+ self.df = pd.DataFrame(data_dict)                # line 231 — pandas pads shorter Series with NaN
+ self.df[col] = pd.to_numeric(...).fillna(0)      # line 235 — NaN → 0.0
+
+ Pandas aligns Series by integer index. The DataFrame length becomes the max (501,826 from 100 Hz channels). All
+ shorter Series get NaN-padded for indices beyond their length, then .fillna(0) converts NaN to 0.0.
+
+ Concrete impact:
+
+ ┌────────────────────────┬───────────┬─────────┬────────────────────┬──────────────────────────────┐
+ │        Channel         │ Frequency │ Samples │ Last Row With Data │ Rows That Become False Zeros │
+ ├────────────────────────┼───────────┼─────────┼────────────────────┼──────────────────────────────┤
+ │ Engine.Oil.Temperature │ 1 Hz      │ 5,019   │ 5,018              │ 5,019 – 501,825              │
+ ├────────────────────────┼───────────┼─────────┼────────────────────┼──────────────────────────────┤
+ │ GPS.Speed              │ 50 Hz     │ 250,913 │ 250,912            │ 250,913 – 501,825            │
+ └────────────────────────┴───────────┴─────────┴────────────────────┴──────────────────────────────┘
+
+ Note: GPS.Speed also has genuine zeros starting at row ~247,770 (GPS signal loss at end of session), but the DataFrame
+  padding adds ~251k more false zeros after that.
+
+ Fix
+
+ File: C:\Users\scott\MotecFile\motec_parser.py, lines 214-235
+
+ Instead of creating differently-sized Series and letting pandas NaN-pad them, forward-fill each lower-frequency
+ channel to the maximum DataFrame length before creating the DataFrame. Each sample at a lower frequency should be
+ Instead of creating differently-sized Series and letting pandas NaN-pad them, forward-fill each lower-frequency
+ channel to the maximum DataFrame length before creating the DataFrame. Each sample at a lower frequency should be
+ repeated for the number of 100 Hz intervals it spans.
+
+ Algorithm:
+ 1. Determine max_len (already 501,826 from the 100 Hz channels)
+ 2. Determine max_freq (100 Hz)
+ 3. For each channel, compute how many 100 Hz steps each sample covers: repeat_count = max_freq // chan.freq
+ 4. Use np.repeat(chan.data, repeat_count) to expand the data, then truncate or pad to max_len
+
+ This produces a CSV where lower-frequency channels hold their last-sampled value between updates (standard step-hold
+ behavior in telemetry), rather than showing false zeros.
+
+ Verification
+
+ 1. Re-run the parser: python motec_parser.py <input_ld> <output_csv>
+ 2. Open the output CSV and confirm Engine.Oil.Temperature has non-zero data throughout (values should step-hold,
+ updating once per second)

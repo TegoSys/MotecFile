@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); $text = [System.Text.Encoding]::ASCII.GetString\\($bytes\\); $lastIndex = -1; $searchStr = \"Mo\"; $pos = 0; while \\(\\($pos = $text.IndexOf\\($searchStr, $pos\\)\\) -ne -1\\) { $lastIndex = $pos; $pos += $searchStr.Length }; \"Last Index: $lastIndex\")",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); $chunk = $bytes[1000000..1000100]; \\(Get-Content -Encoding Byte -Path \"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\" -TotalCount 1000100 | Select-Object -Last 100 | Format-Hex | Out-String\\))",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); $chunk = $bytes[100000..100100]; \\(Get-Content -Encoding Byte -Path \"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\" -TotalCount 100100 | Select-Object -Last 100 | Format-Hex | Out-String\\))",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); for \\($i = 20000; $i -lt $bytes.Length; $i++\\) { if \\($bytes[$i] -ne 0\\) { \"First non-zero at: $i\"; break } })",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); $count = 0; for \\($i = 0; $i -lt $bytes.Length; $i++\\) { if \\($bytes[$i] -ne 0\\) { $count++ } else { if \\($count -ge 1000\\) { \"Large block found starting at: $\\($i - $count\\)\"; break } $count = 0 } })",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); \\(Get-Content -Encoding Byte -Path \"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\" -TotalCount 8000 | Select-Object -Last 200 | Format-Hex | Out-String\\))",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); \\(Get-Content -Encoding Byte -Path \"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\" -TotalCount 50000 | Select-Object -Last 25000 | Format-Hex | Out-String\\))",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); \\(Get-Content -Encoding Byte -Path \"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\" -TotalCount 25176 | Select-Object -Last 500 | Format-Hex | Out-String\\))",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); $text = [System.Text.Encoding]::ASCII.GetString\\($bytes\\); $res = [regex]::Matches\\($text, '\\(Channel|Sample|Rate\\)', 'IgnoreCase'\\); $res | ForEach-Object { $_.Value })",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); $text = [System.Text.Encoding]::ASCII.GetString\\($bytes\\); $pos = $text.IndexOf\\(\"Sample Rate\"\\); if \\($pos -ne -1\\) { $text.Substring\\($pos, 100\\) } else { \"Not found\" })",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); $text = [System.Text.Encoding]::ASCII.GetString\\($bytes\\); $pos = $text.IndexOf\\(\"Rate\"\\); if \\($pos -ne -1\\) { $text.Substring\\($pos, 100\\) } else { \"Not found\" })",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); $text = [System.Text.Encoding]::ASCII.GetString\\($bytes\\); $pos = $text.IndexOf\\(\"Rate\"\\); \"Pos: $pos\"; $bytes[$pos..\\($pos+50\\)] -join ' ')",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); \\(Get-Content -Encoding Byte -Path \"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\" -TotalCount 25200 | Select-Object -Last 200 | Format-Hex | Out-String\\))",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); \\(Get-Content -Encoding Byte -Path \"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\" -TotalCount 1000000 | Select-Object -Last 200 | Format-Hex | Out-String\\))",
+      "PowerShell(Get-Content *)",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\(\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\"\\); $last200 = $bytes[\\($bytes.Length - 200\\)..\\($bytes.Length - 1\\)]; $last200 -join ' ')",
+      "Bash(dd if=\"C:\\\\Users\\\\scott\\\\Downloads\\\\S1_#25606_20260426_191239_02.ld\" bs=1 skip=$\\(\\(2388109 - 32\\)\\) count=32)",
+      "PowerShell(python -c \"import struct; print\\(struct.unpack\\('>f', bytes\\([67, 35, 128, 0]\\)\\)[0]\\); print\\(struct.unpack\\('>f', bytes\\([67, 25, 128, 0]\\)\\)[0]\\); print\\(struct.unpack\\('>f', bytes\\([67, 15, 128, 0]\\)\\)[0]\\); print\\(struct.unpack\\('>f', bytes\\([67, 5, 128, 0]\\)\\)[0]\\)\")",
+      "PowerShell(python -c \"import struct; print\\(struct.unpack\\('>f', bytes\\([66, 247, 0, 0]\\)\\)[0]\\); print\\(struct.unpack\\('>f', bytes\\([66, 227, 0, 0]\\)\\)[0]\\); print\\(struct.unpack\\('>f', bytes\\([66, 207, 0, 0]\\)\\)[0]\\)\")",
+      "PowerShell(python \"C:\\\\Users\\\\scott\\\\MotecFile\\\\run_parser.py\")",
+      "PowerShell(python C:\\\\Users\\\\scott\\\\MotecFile\\\\run_parser.py)",
+      "PowerShell(python C:\\\\Users\\\\scott\\\\MotecFile\\\\debug_units.py)",
+      "PowerShell(python C:\\\\Users\\\\scott\\\\MotecFile\\\\search_units.py)",
+      "PowerShell(python C:\\\\Users\\\\scott\\\\MotecFile\\\\check_ptrs.py)",
+      "PowerShell(python C:\\\\Users\\\\scott\\\\MotecFile\\\\inspect_block.py)",
+      "PowerShell(python C:\\\\Users\\\\scott\\\\MotecFile\\\\debug_raw_headers.py)",
+      "PowerShell(python C:\\\\Users\\\\scott\\\\MotecFile\\\\search_name.py)",
+      "PowerShell(python C:\\\\Users\\\\scott\\\\MotecFile\\\\search_name_2.py)",
+      "PowerShell(python C:\\\\Users\\\\scott\\\\MotecFile\\\\test_unit_offset.py)",
+      "PowerShell(python C:\\\\Users\\\\scott\\\\MotecFile\\\\check_head.py)",
+      "PowerShell(python C:\\\\Users\\\\scott\\\\MotecFile\\\\test_unit_offset_64.py)",
+      "PowerShell(python C:\\\\Users\\\\scott\\\\MotecFile\\\\check_duplicates.py)",
+      "Bash(awk *)"
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+ Added 7 lines, removed 1 line
+      22          # Try to print a few known channels if they exist
+      23          cols_to_show = [col for col in ['Brake.State', 'Engine.Speed.Reference.Engine Sprpm', 'ECU.Battery.Voltage'] if col in df.
+          columns]
+      24          if cols_to_show:
+      25 -            print(df[cols_to_show].head())
+      25 +            # Try to print a few rows from the middle of the file
+      26 +        if len(df) > 1000:
+      27 +            print("\nMiddle 5 rows (sample 36000):")
+      28 +            print(df[cols_to_show].iloc[36000:36005])
+      29 +
+      30 +        print("\nLast 5 rows:")
+      31 +        print(df[cols_to_show].tail())
+      32          else:
+      33              print(df.iloc[:, :5].head())
+      34
+
+● PowerShell(python "C:\Users\scott\MotecFile\run_parser.py")
+  ⎿  Error: Exit code 1
+       File "C:\Users\scott\MotecFile\run_parser.py", line 26
+         if len(df) > 1000:
+         ^
+     IndentationError: expected an indented block after 'if' statement on line 24

@@ -1,0 +1,11 @@
+# Ignore all CSV and telemetry data files
+**/*.csv
+**/*.ld
+**/*.ibt
+*.xrk
+
+# Environments & Dependencies
+.env
+venv/
+raceAgeEnv/
+node_modules/
