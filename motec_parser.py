@@ -314,13 +314,13 @@ class MotecLdParser:
         # Write metadata header then headers, units, and data
         with open(output_path, 'w', encoding='utf-8', newline='') as f:
             f.write(f'"Format","MoTeC CSV File",,,"Workbook",""\n')
-            f.write(f"driver:,    {driver}\n")
-            f.write(f"vehicleid:, {vehicleid}\n")
-            f.write(f"venue:,     {venue}\n")
-            f.write(f"event:,     {event}\n")
-            f.write(f"session:,   {session}\n")
-            f.write(f"sample rate:, {max_freq} Hz\n")
-            f.write(f"short_comment:, {short_comment}\n")
+            f.write(f'"Driver",    {driver},\n')
+            f.write(f'"Vehicleid", {vehicleid},\n')
+            f.write(f'"Venue",     {venue},\n')
+            f.write(f'"Event",     {event},\n')
+            f.write(f'"Session",   {session},\n')
+            f.write(f'"Sample Rate", {max_freq} Hz,\n')
+            f.write(f'"Short_comment", {short_comment},\n')
             # Insert blank lines so column headers land on line 15 (MoTeC CSV standard)
             # 8 metadata lines above + 6 blank = line 15 for headers, line 16 for units
             f.write("\n" * 6)
