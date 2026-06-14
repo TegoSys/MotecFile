@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 import numpy as np
 import pandas as pd
@@ -85,16 +87,18 @@ class ldHead(object):
         "126x"    # ??
     )
 
-    def __init__(self, meta_ptr, data_ptr, event_ptr, event, driver, vehicleid, venue, datetime, short_comment):
+    def __init__(self, meta_ptr, data_ptr, event_ptr, event, driver, vehicleid, venue, datetime, short_comment, device_serial="", device_type=""):
         self.meta_ptr, self.data_ptr, self.event_ptr, self.event, self.driver, self.vehicleid, \
         self.venue, self.datetime, self.short_comment = meta_ptr, data_ptr, event_ptr, event, \
                                                        driver, vehicleid, venue, datetime, short_comment
+        self.device_serial = device_serial
+        self.device_type = device_type
 
     @classmethod
     def fromfile(cls, f):
         (_, meta_ptr, data_ptr, event_ptr,
             _, _, _,
-            _, _, _, _, n,
+            device_serial, device_type_raw, _, _, n,
             date, time,
             driver, vehicleid, venue,
             _, short_comment) = struct.unpack(ldHead.fmt, f.read(struct.calcsize(ldHead.fmt)))
@@ -112,7 +116,9 @@ class ldHead(object):
         if event_ptr > 0:
             f.seek(event_ptr)
             event = ldEvent.fromfile(f)
-        return cls(meta_ptr, data_ptr, event_ptr, event, driver, vehicleid, venue, _datetime, short_comment)
+        device_type = decode_string(device_type_raw) if isinstance(device_type_raw, bytes) else str(device_type_raw)
+        device_serial_str = str(device_serial) if device_serial else ""
+        return cls(meta_ptr, data_ptr, event_ptr, event, driver, vehicleid, venue, _datetime, short_comment, device_serial_str, device_type)
 
 class ldChan(object):
     fmt = '<' + (
@@ -206,8 +212,9 @@ class MotecLdParser:
     """
     Refactored Parser for MoTeC .ld binary files.
     """
-    def __init__(self, file_path):
+    def __init__(self, file_path, sample_rate=None):
         self.file_path = file_path
+        self.sample_rate = sample_rate  # None = full resolution; integer = target Hz
         self.head = None
         self.channels = []
         self.df = None
@@ -270,12 +277,16 @@ class MotecLdParser:
 
     def to_csv(self, output_path):
         """
-        Exports the parsed DataFrame to a CSV file with a metadata header and units row.
+        Exports the parsed DataFrame to a CSV file matching the standard MoTeC CSV format:
+          Rows 1-12:  Metadata key/value pairs (multi-column quoted format)
+          Rows 13-14: BLANK
+          Row 15:     Column names (double-quoted, comma-separated)
+          Row 16:     Units row (double-quoted, comma-separated)
+          Rows 17-18: BLANK
+          Row 19+:    Data rows (all values double-quoted)
         """
         if self.df is None or self.head is None:
             raise ValueError("No data parsed. Call parse() first.")
-
-        print(f"Exporting to {output_path}...")
 
         # Create a copy of the dataframe to avoid modifying the original parser state
         df_copy = self.df.copy()
@@ -284,17 +295,37 @@ class MotecLdParser:
         time_array = np.arange(len(df_copy)) * 0.01
         df_copy.insert(0, 'Time', time_array)
 
-        # Extract metadata
-        driver = self.head.driver
-        vehicleid = self.head.vehicleid
-        venue = self.head.venue
-        event = self.head.event.name if self.head.event else "N/A"
-        session = self.head.event.session if self.head.event else "N/A"
-        short_comment = self.head.short_comment
+        # Extract metadata from .ld header
+        driver = self.head.driver if self.head.driver else ""
+        vehicleid = self.head.vehicleid if self.head.vehicleid else ""
+        venue = self.head.venue if self.head.venue else ""
+        session = self.head.event.session if self.head.event and self.head.event.session else ""
+        short_comment = self.head.short_comment if self.head.short_comment else ""
 
-        # Calculate maximum sample rate
-        freqs = [chan.freq for chan in self.channels]
-        max_freq = max(freqs) if freqs else "N/A"
+        # Device identifier from header — prefer type string (e.g. "M1") over numeric serial
+        device_type = self.head.device_type if self.head.device_type else ""
+        device_serial = str(self.head.device_serial) if self.head.device_serial else ""
+        device_str = device_type if device_type else device_serial
+
+        # Date/time formatting — head.datetime is a Python datetime object
+        log_date = self.head.datetime.strftime('%m/%d/%Y') if self.head.datetime else ""
+        log_time = self.head.datetime.strftime('%I:%M:%S %p') if self.head.datetime else ""
+
+        # Calculate maximum sample rate and effective output rate
+        freqs = [chan.freq for chan in self.channels if chan.freq > 0]
+        max_freq = max(freqs) if freqs else 100
+
+        # Downsample if requested — take every Nth row (safe since channels are step-held to max_freq)
+        effective_rate = max_freq
+        if self.sample_rate is not None and max_freq > self.sample_rate:
+            stride = max_freq // self.sample_rate
+            df_copy = df_copy.iloc[::stride].reset_index(drop=True)
+            # Regenerate Time array at the new sample rate
+            time_array = np.arange(len(df_copy)) * (1.0 / self.sample_rate)
+            df_copy['Time'] = time_array
+            effective_rate = self.sample_rate
+
+        duration_s = len(df_copy) / effective_rate
 
         # Get units for all channels discovered, matching the DataFrame columns
         units = []
@@ -303,7 +334,6 @@ class MotecLdParser:
             name = chan.name
             if name in seen_names:
                 seen_names[name] += 1
-                # The name in df is f"{name}_{seen_names[name]}"
             else:
                 seen_names[name] = 0
             units.append(chan.unit)
@@ -311,54 +341,74 @@ class MotecLdParser:
         # Add 's' as the first element of the units row for the Time column
         units.insert(0, 's')
 
-        # Write metadata header then headers, units, and data
+        # Apply column name mappings: special cases from JSON + dots→spaces for rest
+        name_map = _build_column_name_mapping()
+        for col in df_copy.columns:
+            if col not in name_map:
+                name_map[col] = col.replace('.', ' ')
+        df_copy.rename(columns=name_map, inplace=True)
+
+        # Apply precision formatting: GPS lat/lon get 6 decimal places, Time gets 3 (ms precision for unique timestamps), rest get 1
+        gps_cols = {'GPS Latitude', 'GPS Longitude'}
+        for col in df_copy.columns:
+            if col in gps_cols:
+                df_copy[col] = df_copy[col].map(lambda x: f'{x:.6f}')
+            elif col == 'Time':
+                df_copy[col] = df_copy[col].map(lambda x: f'{x:.3f}')
+            else:
+                df_copy[col] = df_copy[col].map(lambda x: f'{x:.1f}')
+
+        # Write the CSV file with exact MoTeC row positioning
         with open(output_path, 'w', encoding='utf-8', newline='') as f:
+            # --- Rows 1-12: Standard MoTeC multi-column quoted metadata ---
             f.write(f'"Format","MoTeC CSV File",,,"Workbook",""\n')
-            f.write(f'"Driver",    {driver},\n')
-            f.write(f'"Vehicleid", {vehicleid},\n')
-            f.write(f'"Venue",     {venue},\n')
-            f.write(f'"Event",     {event},\n')
-            f.write(f'"Session",   {session},\n')
-            f.write(f'"Sample Rate", {max_freq} Hz,\n')
-            f.write(f'"Short_comment", {short_comment},\n')
-            # Insert blank lines so column headers land on line 15 (MoTeC CSV standard)
-            # 8 metadata lines above + 6 blank = line 15 for headers, line 16 for units
-            f.write("\n" * 6)
+            f.write(f'"Venue","{venue}",,,"Worksheet",""\n')
+            f.write(f'"Vehicle","{vehicleid}",,,"Vehicle Desc",""\n')
+            f.write(f'"Driver","{driver}",,,"Engine ID",""\n')
+            f.write(f'"Device","{device_str}"\n')
+            f.write(f'"Comment","{short_comment}",,,"Session","{session}"\n')
+            f.write(f'"Log Date","{log_date}",,,"Origin Time","0.000","s"\n')
+            f.write(f'"Log Time","{log_time}",,,"Start Time","0.000","s"\n')
+            f.write(f'"Sample Rate","{effective_rate:.3f}","Hz",,"End Time","{duration_s:.3f}","s"\n')
+            f.write(f'"Duration","{duration_s:.3f}","s",,"Start Distance","0","ft"\n')
+            f.write(f'"Range","entire outing",,,"End Distance","",""\n')
+            f.write(f'"Beacon Markers","""\n')
 
-            print("dropping coolant enable")
-            df_copy.drop('Coolant.Fans.Enable',axis=1, inplace=True)
-            del units[3]
+            # --- Rows 13-14: BLANK ---
+            f.write("\n\n")
 
-            # Apply column name mappings: special cases from JSON + dots→spaces for rest
-            name_map = _build_column_name_mapping()
-            for col in df_copy.columns:
-                if col not in name_map:
-                    name_map[col] = col.replace('.', ' ')
-            df_copy.rename(columns=name_map, inplace=True)
-
-            # Write column headers from the modified copy
+            # --- Row 15: Column names (double-quoted) ---
             f.write(",".join(f'"{col}"' for col in df_copy.columns) + "\n")
-            # Write units row including the 's' unit
+
+            # --- Row 16: Units row (double-quoted) ---
             f.write(",".join(f'"{unit}"' for unit in units) + "\n")
-            # Write the modified DataFrame as CSV without index and without header
-            print(f'output shape {df_copy.shape}')
-            df_copy.to_csv(f, index=False, header=False)
-        print("Export complete.")
+
+            # --- Rows 17-18: BLANK ---
+            f.write("\n\n")
+
+            # --- Row 19+: Data rows (all values double-quoted to match Motec export) ---
+            buf = io.StringIO()
+            df_copy.to_csv(buf, index=False, header=False, quoting=csv.QUOTE_ALL)
+            f.write(buf.getvalue())
 
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) < 3:
-        print("Usage: python motec_parser.py <input_ld_file> <output_csv_file>")
-        sys.exit(1)
+    import argparse, sys
 
-    input_file = sys.argv[1]
-    output_file = sys.argv[2]
+    ap = argparse.ArgumentParser(description='Convert Motec .ld binary files to standard MoTeC CSV format.')
+    ap.add_argument('input', help='Path to input .ld file')
+    ap.add_argument('output', help='Path to output .csv file')
+    ap.add_argument('--sample-rate', type=int, default=None,
+                    help='Target output sample rate in Hz (default: full resolution). '
+                         'Lower values reduce file size by taking every Nth row.')
+    args = ap.parse_args()
 
     try:
-        parser = MotecLdParser(input_file)
+        parser = MotecLdParser(args.input, sample_rate=args.sample_rate)
         parser.parse()
-        parser.to_csv(output_file)
-        print(f"Successfully converted {input_file} to {output_file}")
+        if args.sample_rate:
+            print(f"Downsampling to {args.sample_rate} Hz...")
+        parser.to_csv(args.output)
+        print(f"Successfully converted {args.input} to {args.output}")
     except Exception as e:
         print(f"Error: {e}")
         import traceback
