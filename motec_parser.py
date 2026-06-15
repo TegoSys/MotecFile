@@ -290,13 +290,6 @@ class MotecLdParser:
         if self.df is None or self.head is None:
             raise ValueError("No data parsed. Call parse() first.")
 
-        # Create a copy of the dataframe to avoid modifying the original parser state
-        df_copy = self.df.copy()
-
-        # Generate time array: 0.00, 0.01, 0.02... and insert as the first column
-        time_array = np.arange(len(df_copy)) * 0.01
-        df_copy.insert(0, 'Time', time_array)
-
         # Extract metadata from .ld header — strip NUL bytes and other control chars
         def clean_metadata(s):
             if not s:
@@ -322,80 +315,74 @@ class MotecLdParser:
         freqs = [chan.freq for chan in self.channels if chan.freq > 0]
         max_freq = max(freqs) if freqs else 100
 
+        # Work on a copy of the channel data — apply filtering BEFORE creating final DataFrame
+        df_work = self.df.copy()
+
         # Downsample if requested — take every Nth row (safe since channels are step-held to max_freq)
         effective_rate = max_freq
         if self.sample_rate is not None and max_freq > self.sample_rate:
             stride = max_freq // self.sample_rate
-            df_copy = df_copy.iloc[::stride].reset_index(drop=True)
-            # Regenerate Time array at the new sample rate
-            time_array = np.arange(len(df_copy)) * (1.0 / self.sample_rate)
-            df_copy['Time'] = time_array
+            df_work = df_work.iloc[::stride].reset_index(drop=True)
             effective_rate = self.sample_rate
 
         # Skip leading rows if requested — useful for skipping pre-race stationary data
         if self.skip_rows is not None:
-            df_copy = df_copy.iloc[self.skip_rows:].reset_index(drop=True)
-            # Regenerate Time column so it starts from 0.000 after skip
-            time_array = np.arange(len(df_copy)) * (1.0 / effective_rate)
-            df_copy['Time'] = time_array
+            df_work = df_work.iloc[self.skip_rows:].reset_index(drop=True)
 
         # Truncate to max_rows if requested — for debugging/testing large files
         if self.max_rows is not None:
-            df_copy = df_copy.head(self.max_rows).reset_index(drop=True)
-            # Regenerate Time column so it's contiguous from 0.000 after truncation
-            time_array = np.arange(len(df_copy)) * (1.0 / effective_rate)
-            df_copy['Time'] = time_array
+            df_work = df_work.head(self.max_rows).reset_index(drop=True)
 
-        # Re-coerce all columns to numeric after any truncation/modification — fills NaN with 0
-        for col in df_copy.columns:
+        # Apply column name mappings: special cases from JSON + dots→spaces for rest
+        name_map = _build_column_name_mapping()
+        for col in df_work.columns:
+            if col not in name_map:
+                name_map[col] = col.replace('.', ' ')
+        df_work.rename(columns=name_map, inplace=True)
+
+        # Re-coerce all channel columns to numeric after any truncation/modification — fills NaN with 0
+        for col in df_work.columns:
             if col not in ('GPS Latitude', 'GPS Longitude'):
-                df_copy[col] = pd.to_numeric(df_copy[col], errors='coerce').fillna(0)
+                df_work[col] = pd.to_numeric(df_work[col], errors='coerce').fillna(0)
 
         # Mark invalid GPS coordinates as NaN — raw zeros in the .ld file mean
         # "no GPS lock". Don't fill these with 0 because they plot thousands of meters off-track.
         for gps_col, valid_range in [('GPS Latitude', (35.0, 50.0)),
                                      ('GPS Longitude', (-125.0, -65.0))]:
-            if gps_col in df_copy.columns:
-                vals = pd.to_numeric(df_copy[gps_col], errors='coerce')
+            if gps_col in df_work.columns:
+                vals = pd.to_numeric(df_work[gps_col], errors='coerce')
                 # Values outside continental US range are invalid GPS (zeros, etc.)
                 invalid_mask = vals.isna() | (vals < valid_range[0]) | (vals > valid_range[1])
-                df_copy.loc[invalid_mask, gps_col] = np.nan
+                df_work.loc[invalid_mask, gps_col] = np.nan
 
-        duration_s = len(df_copy) / effective_rate
+        duration_s = len(df_work) / effective_rate
 
-        # Get units for all channels discovered, matching the DataFrame columns
-        units = []
-        seen_names = {}
-        for chan in self.channels:
-            name = chan.name
-            if name in seen_names:
-                seen_names[name] += 1
-            else:
-                seen_names[name] = 0
-            units.append(chan.unit)
+        # --- Build Time and Lap State as numpy arrays BEFORE creating final DataFrame ---
 
-        # Add 's' as the first element of the units row for the Time column
-        units.insert(0, 's')
-
-        # Apply column name mappings: special cases from JSON + dots→spaces for rest
-        name_map = _build_column_name_mapping()
-        for col in df_copy.columns:
-            if col not in name_map:
-                name_map[col] = col.replace('.', ' ')
-        df_copy.rename(columns=name_map, inplace=True)
+        # Generate time array: 0.00, 0.01, 0.02... at the effective sample rate
+        if self.sample_rate is not None and max_freq > self.sample_rate:
+            time_array = np.arange(len(df_work)) * (1.0 / effective_rate)
+        else:
+            time_array = np.arange(len(df_work)) * (1.0 / effective_rate)
 
         # Synthesize "Lap State" column if missing — raceAgent requires it for lap detection
         # Lap State: 0=unknown, 1=idle/pit, 2=rolling/pre-lap, 3=racing
-        if 'Lap State' not in df_copy.columns:
-            lap_state = np.ones(len(df_copy), dtype=int)  # default: idle
-            has_gps_speed = 'GPS Speed' in df_copy.columns
-            has_lap_number = 'Lap Number' in df_copy.columns
+        has_lap_state = 'Lap State' in df_work.columns or any(
+            chan.name.replace('.', ' ') == 'Lap State' or chan.name == 'Lap State'
+            for chan in self.channels
+        )
+
+        lap_state_arr = None
+        if not has_lap_state:
+            lap_state_arr = np.ones(len(df_work), dtype=int)  # default: idle
+            has_gps_speed = 'GPS Speed' in df_work.columns
+            has_lap_number = 'Lap Number' in df_work.columns
 
             if has_gps_speed and has_lap_number:
                 # Use Lap Number as ground truth to group racing data.
                 # Threshold must be high enough to exclude warmup/pit-entrance fragments.
-                gps_speed = pd.to_numeric(df_copy['GPS Speed'], errors='coerce').fillna(0)
-                lap_number = pd.to_numeric(df_copy['Lap Number'], errors='coerce').fillna(0)
+                gps_speed = pd.to_numeric(df_work['GPS Speed'], errors='coerce').fillna(0)
+                lap_number = pd.to_numeric(df_work['Lap Number'], errors='coerce').fillna(0)
 
                 # Identify on-track rows: speed > 40 km/h excludes slow warmup and pit movement.
                 # Real racing laps at Lime Rock maintain speeds well above this even in corners.
@@ -410,28 +397,51 @@ class MotecLdParser:
                         continue  # skip pre-race idle laps
                     lap_rows = (lap_number == lap_val) & on_track_mask
                     if lap_rows.sum() >= min_lap_rows:
-                        lap_state[lap_rows] = 3
+                        lap_state_arr[lap_rows] = 3
 
                 # Set rolling/pre-lap for moderate-speed rows that weren't classified as racing
-                rolling_mask = (gps_speed >= 1) & (gps_speed <= 40) & (lap_state == 1)
-                lap_state[rolling_mask] = 2
+                rolling_mask = (gps_speed >= 1) & (gps_speed <= 40) & (lap_state_arr == 1)
+                lap_state_arr[rolling_mask] = 2
                 # Mark GPS-invalid rows
-                lap_state[gps_speed < 0] = 0
+                lap_state_arr[gps_speed < 0] = 0
 
             elif has_gps_speed:
                 # Fallback without Lap Number — simple threshold, smoothed with median filter
-                gps_speed = pd.to_numeric(df_copy['GPS Speed'], errors='coerce').fillna(0)
-                lap_state[gps_speed > 15] = 3
-                lap_state[(gps_speed >= 1) & (gps_speed <= 15)] = 2
-                lap_state[gps_speed < 0] = 0
+                gps_speed = pd.to_numeric(df_work['GPS Speed'], errors='coerce').fillna(0)
+                lap_state_arr[gps_speed > 15] = 3
+                lap_state_arr[(gps_speed >= 1) & (gps_speed <= 15)] = 2
+                lap_state_arr[gps_speed < 0] = 0
 
-            # Insert Lap State after Time column (index 1)
-            time_idx = list(df_copy.columns).index('Time') if 'Time' in df_copy.columns else 0
-            df_copy.insert(time_idx + 1, 'Lap State', lap_state)
-            # Add corresponding unit entry — units[0] is 's' for Time, Lap State goes at index 1
-            units.insert(1, '')
+        # Build units list for all channels
+        units = []
+        seen_names = {}
+        for chan in self.channels:
+            name = chan.name
+            if name in seen_names:
+                seen_names[name] += 1
+            else:
+                seen_names[name] = 0
+            units.append(chan.unit)
 
-        # Re-coerce all columns to numeric after any truncation/modification — fills NaN with 0
+        # Assemble final DataFrame from dict — single construction, zero insert() calls
+        # Prepend Time and optional Lap State to channel columns
+        final_dict = {'Time': time_array}
+        if lap_state_arr is not None:
+            final_dict['Lap State'] = lap_state_arr
+
+        # Add 's' as the first element of the units row for the Time column
+        units_list = ['s']
+        if lap_state_arr is not None:
+            units_list.append('')
+        units_list.extend(units)
+
+        for col in df_work.columns:
+            final_dict[col] = df_work[col].values
+
+        # Create DataFrame once from dict — avoids fragmentation warnings
+        df_copy = pd.DataFrame(final_dict)
+
+        # Re-coerce all columns to numeric after assembly — fills NaN with 0 (Lap State is int, safe)
         for col in df_copy.columns:
             if col not in ('GPS Latitude', 'GPS Longitude'):
                 df_copy[col] = pd.to_numeric(df_copy[col], errors='coerce').fillna(0)
@@ -470,7 +480,7 @@ class MotecLdParser:
             f.write(",".join(f'"{col}"' for col in df_copy.columns) + "\n")
 
             # --- Row 16: Units row (double-quoted) ---
-            f.write(",".join(f'"{unit}"' for unit in units) + "\n")
+            f.write(",".join(f'"{unit}"' for unit in units_list) + "\n")
 
             # --- Rows 17-18: BLANK ---
             f.write("\n\n")
